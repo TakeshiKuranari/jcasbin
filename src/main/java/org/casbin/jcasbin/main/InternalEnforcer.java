@@ -16,6 +16,7 @@ package org.casbin.jcasbin.main;
 
 import org.casbin.jcasbin.model.Assertion;
 import org.casbin.jcasbin.model.Model;
+import org.casbin.jcasbin.model.RedisMsg;
 import org.casbin.jcasbin.persist.BatchAdapter;
 import org.casbin.jcasbin.persist.UpdatableAdapter;
 import org.casbin.jcasbin.persist.WatcherEx;
@@ -30,7 +31,44 @@ import static java.util.Collections.singletonList;
 /**
  * InternalEnforcer = CoreEnforcer + Internal API.
  */
-class InternalEnforcer extends CoreEnforcer {
+class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
+
+    /**
+     * 在构造函数中设置父类的WatcherEx回调函数实现
+     */
+    public InternalEnforcer() {
+        super();
+        setWatcherExCallback(this);
+    }
+
+    /**
+     * 实现WatcherExCallback的onCallback方法
+     * @param msgStr redis订阅的消息
+     */
+    @Override
+    public void onCallback(String msgStr) {
+        RedisMsg msg = RedisMsg.fromJson(msgStr);
+        assert msg != null;
+        WatcherEx.UpdateType updateType = msg.getMethod();
+        Util.logPrint("增量更新：" + msg.toJson());
+        switch (updateType) {
+            case UpdateForAddPolicy:
+                addPolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRule());
+                break;
+            case UpdateForRemovePolicy:
+                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                break;
+            case UpdateForAddPolicies:
+                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                break;
+            case UpdateForRemovePolicies:
+                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                break;
+            default:
+                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                break;
+        }
+    }
 
     /**
      *
@@ -98,6 +136,22 @@ class InternalEnforcer extends CoreEnforcer {
         buildIncrementalRoleLinks(sec, ptype, singletonList(rule), Model.PolicyOperations.POLICY_ADD);
 
         return notifyWatcher(sec, ptype, singletonList(rule), WatcherEx.UpdateType.UpdateForAddPolicy);
+    }
+    boolean addPolicyForWatcherEx(String sec, String ptype, List<String> rule) {
+        if (mustUseDispatcher()) {
+            dispatcher.addPolicies(sec, ptype, singletonList(rule));
+            return true;
+        }
+
+        if (model.hasPolicy(sec, ptype, rule)) {
+            return false;
+        }
+
+        model.addPolicy(sec, ptype, rule);
+
+        buildIncrementalRoleLinks(sec, ptype, singletonList(rule), Model.PolicyOperations.POLICY_ADD);
+
+        return true;
     }
 
 

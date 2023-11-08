@@ -60,6 +60,8 @@ public class CoreEnforcer {
 
     private AviatorEvaluatorInstance aviatorEval;
 
+    private WatcherExCallback watcherExCallback;
+
     void initialize() {
         rmMap = new HashMap<>();
         eft = new DefaultEffector();
@@ -186,13 +188,26 @@ public class CoreEnforcer {
     }
 
     /**
+     * 设置WatcherEx回调函数的实现
+     * @param watcherExCallback callback的实现
+     */
+    public void setWatcherExCallback(WatcherExCallback watcherExCallback) {
+        this.watcherExCallback = watcherExCallback;
+    }
+    /**
      * setWatcher sets the current watcher.
      *
      * @param watcher the watcher.
      */
     public void setWatcher(Watcher watcher) {
         this.watcher = watcher;
-        watcher.setUpdateCallback(this::loadPolicy);
+        if (watcher instanceof WatcherEx) {
+            // 实现增量更新
+            watcher.setUpdateCallback((msgStr)-> watcherExCallback.onCallback(msgStr));
+        } else {
+            // 原来的方法，只能全量更新
+            watcher.setUpdateCallback(this::loadPolicy);
+        }
     }
 
     /**
