@@ -17,6 +17,7 @@ package org.casbin.jcasbin.main;
 import org.casbin.jcasbin.model.Model;
 import org.casbin.jcasbin.persist.Adapter;
 import org.casbin.jcasbin.persist.Watcher;
+import org.casbin.jcasbin.persist.WatcherEx;
 
 import java.util.List;
 import java.util.concurrent.locks.Lock;
@@ -106,7 +107,18 @@ public class SyncedEnforcer extends Enforcer {
     @Override
     public void setWatcher(Watcher watcher) {
         this.watcher = watcher;
-        watcher.setUpdateCallback(this::loadPolicy);
+        if (watcher instanceof WatcherEx) {
+            // 实现增量更新
+            watcher.setUpdateCallback(this::updateCallback);
+        } else {
+            // 原来的方法，只能全量更新
+            watcher.setUpdateCallback(this::loadPolicy);
+        }
+    }
+
+    private void updateCallback(String msgStr) {
+        // 必须要有返回值才能使用参数类型为Supplier的runSynchronized方法
+        runSynchronized(() -> super.onCallback(msgStr), READ_WRITE_LOCK.writeLock());
     }
 
     /**

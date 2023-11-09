@@ -44,30 +44,51 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
     /**
      * 实现WatcherExCallback的onCallback方法
      * @param msgStr redis订阅的消息
+     *
      */
     @Override
-    public void onCallback(String msgStr) {
+    public boolean onCallback(String msgStr) {
         RedisMsg msg = RedisMsg.fromJson(msgStr);
         assert msg != null;
         WatcherEx.UpdateType updateType = msg.getMethod();
         Util.logPrint("增量更新：" + msg.toJson());
+        boolean result = true;
         switch (updateType) {
-            case UpdateForAddPolicy:
-                addPolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRule());
-                break;
-            case UpdateForRemovePolicy:
-                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+            case Update:
+                loadPolicy();
                 break;
             case UpdateForAddPolicies:
-                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                result = addPoliciesForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRules());
+                break;
+            case UpdateForAddPolicy:
+                result = addPolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRule());
+                break;
+            case UpdateForRemoveFilteredPolicy:
+                result = removeFilteredPolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getFieldIndex(), msg.getFieldValues().toArray(new String[0]));
                 break;
             case UpdateForRemovePolicies:
-                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                result = removePoliciesForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRules());
+                break;
+            case UpdateForRemovePolicy:
+                result = removePolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getNewRule());
+                break;
+//            case UpdateForSavePolicy:
+//                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+//                flag = false;
+//                break;
+//            case UpdateForUpdatePolicies:
+//                Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+//                flag = false;
+//                break;
+            case UpdateForUpdatePolicy:
+                result = updatePolicyForWatcherEx(msg.getSec(), msg.getPtype(), msg.getOldRule(), msg.getNewRule());
                 break;
             default:
                 Util.logPrint("UnsupportedUpdateType for notifyWatcher");
+                result = false;
                 break;
         }
+        return result;
     }
 
     /**
@@ -187,6 +208,22 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
 
         return notifyWatcher(sec, ptype, rules, WatcherEx.UpdateType.UpdateForAddPolicies);
     }
+    boolean addPoliciesForWatcherEx(String sec, String ptype, List<List<String>> rules) {
+        if (mustUseDispatcher()) {
+            dispatcher.addPolicies(sec, ptype, rules);
+            return true;
+        }
+
+        if (model.hasPolicies(sec, ptype, rules)) {
+            return false;
+        }
+
+        model.addPolicies(sec, ptype, rules);
+
+        buildIncrementalRoleLinks(sec, ptype, rules, Model.PolicyOperations.POLICY_ADD);
+
+        return true;
+    }
 
     /**
      * buildIncrementalRoleLinks provides incremental build the role inheritance relations.
@@ -227,6 +264,22 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
         buildIncrementalRoleLinks(sec, ptype, singletonList(rule), Model.PolicyOperations.POLICY_REMOVE);
 
         return notifyWatcher(sec, ptype, singletonList(rule), WatcherEx.UpdateType.UpdateForRemovePolicy);
+    }
+    boolean removePolicyForWatcherEx(String sec, String ptype, List<String> rule) {
+        if (mustUseDispatcher()) {
+            dispatcher.removePolicies(sec, ptype, singletonList(rule));
+            return true;
+        }
+
+        boolean ruleRemoved = model.removePolicy(sec, ptype, rule);
+
+        if (!ruleRemoved) {
+            return false;
+        }
+
+        buildIncrementalRoleLinks(sec, ptype, singletonList(rule), Model.PolicyOperations.POLICY_REMOVE);
+
+        return true;
     }
 
     /**
@@ -300,6 +353,42 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
 
         return true;
     }
+    boolean updatePolicyForWatcherEx(String sec, String ptype, List<String> oldRule, List<String> newRule) {
+        if (mustUseDispatcher()) {
+            dispatcher.updatePolicy(sec, ptype, oldRule, newRule);
+            return true;
+        }
+
+        boolean ruleUpdated = model.updatePolicy(sec, ptype, oldRule, newRule);
+
+        if (!ruleUpdated) {
+            return false;
+        }
+
+        if ("g".equals(sec)) {
+            try {
+                // remove the old rule
+                List<List<String>> oldRules = new ArrayList<>();
+                oldRules.add(oldRule);
+                buildIncrementalRoleLinks(Model.PolicyOperations.POLICY_REMOVE, ptype, oldRules);
+            } catch (Exception e) {
+                Util.logPrint("An exception occurred:" + e.getMessage());
+                return false;
+            }
+
+            try {
+                // add the new rule
+                List<List<String>> newRules = new ArrayList<>();
+                newRules.add(newRule);
+                buildIncrementalRoleLinks(Model.PolicyOperations.POLICY_ADD, ptype, newRules);
+            } catch (Exception e) {
+                Util.logPrint("An exception occurred:" + e.getMessage());
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     /**
      * removePolicies removes rules from the current policy.
@@ -336,6 +425,26 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
         buildIncrementalRoleLinks(sec, ptype, rules, Model.PolicyOperations.POLICY_REMOVE);
 
         return notifyWatcher(sec, ptype, rules, WatcherEx.UpdateType.UpdateForRemovePolicies);
+    }
+    boolean removePoliciesForWatcherEx(String sec, String ptype, List<List<String>> rules) {
+        if (mustUseDispatcher()) {
+            dispatcher.removePolicies(sec, ptype, rules);
+            return true;
+        }
+
+        if (!model.hasPolicies(sec, ptype, rules)) {
+            return false;
+        }
+
+        boolean rulesRemoved = model.removePolicies(sec, ptype, rules);
+
+        if (!rulesRemoved) {
+            return false;
+        }
+
+        buildIncrementalRoleLinks(sec, ptype, rules, Model.PolicyOperations.POLICY_REMOVE);
+
+        return true;
     }
 
     /**
@@ -380,6 +489,28 @@ class InternalEnforcer extends CoreEnforcer implements WatcherExCallback {
                 watcher.update();
             }
         }
+
+        return true;
+    }
+    boolean removeFilteredPolicyForWatcherEx(String sec, String ptype, int fieldIndex, String... fieldValues) {
+        if (mustUseDispatcher()) {
+            dispatcher.removeFilteredPolicy(sec, ptype, fieldIndex, fieldValues);
+            return true;
+        }
+
+        if (fieldValues == null || fieldValues.length == 0) {
+            Util.logPrint("Invalid fieldValues parameter");
+            return false;
+        }
+
+        List<List<String>> effects = model.removeFilteredPolicyReturnsEffects(sec, ptype, fieldIndex, fieldValues);
+        boolean ruleRemoved = effects.size() > 0;
+
+        if (!ruleRemoved) {
+            return false;
+        }
+
+        buildIncrementalRoleLinks(sec, ptype, effects, Model.PolicyOperations.POLICY_REMOVE);
 
         return true;
     }
